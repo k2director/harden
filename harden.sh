@@ -1,6 +1,6 @@
 #!/bin/bash
 # Harden a fresh Ubuntu 22.04/24.04 droplet for Kamal + Docker deployment
-# Safe to rerun. Tested on DigitalOcean default images.
+# Safe to rerun. Tested on DigitalOcean & Hetzner default images.
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -22,6 +22,12 @@ if ! id "deploy" &>/dev/null; then
   chown -R deploy:deploy /home/deploy/.ssh
   echo "✅ Created user 'deploy'"
 fi
+
+# --- 2b. Give deploy passwordless sudo (needed for Kamal) ---
+mkdir -p /etc/sudoers.d
+echo "deploy ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/deploy
+chmod 440 /etc/sudoers.d/deploy
+echo "✅ Deploy user granted passwordless sudo"
 
 # --- 3. SSH hardening ---
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
