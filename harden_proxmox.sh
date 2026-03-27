@@ -2,8 +2,14 @@
 # post-clone-harden.sh
 # Run this on each freshly cloned VM from your template
 # Assumes Docker, fail2ban, and base hardening are already in the template
-
 set -euo pipefail
+
+# ── Configuration ──────────────────────────────────────────────────────────
+# Set these before running the script
+RESEND_API_KEY="re_your_key_here"
+ALERT_EMAIL="your@email.com"
+DISK_THRESHOLD=80   # Alert when disk usage exceeds this percentage
+# ──────────────────────────────────────────────────────────────────────────
 
 echo "🔒 Running post-clone hardening..."
 
@@ -58,6 +64,67 @@ sudo tee /etc/logrotate.d/docker-containers > /dev/null <<'EOF'
 }
 EOF
 echo "✅ Docker log rotation configured"
+
+# --- 7. Unattended security upgrades ---
+sudo apt-get install -y unattended-upgrades > /dev/null 2>&1
+sudo tee /etc/apt/apt.conf.d/50unattended-upgrades > /dev/null <<'EOF'
+Unattended-Upgrade::Allowed-Origins {
+    "${distro_id}:${distro_codename}-security";
+};
+Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+Unattended-Upgrade::MinimalSteps "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";
+EOF
+sudo tee /etc/apt/apt.conf.d/20auto-upgrades > /dev/null <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+echo "✅ Unattended security upgrades configured"
+
+# --- 8. Disk space alerting ---
+sudo tee /usr/local/bin/check-disk-space.sh > /dev/null <<DISKSCRIPT
+#!/bin/bash
+THRESHOLD=${DISK_THRESHOLD}
+RESEND_API_KEY="${RESEND_API_KEY}"
+ALERT_EMAIL="${ALERT_EMAIL}"
+HOSTNAME=\$(hostname)
+
+USAGE=\$(df / | awk 'NR==2 {print \$5}' | tr -d '%')
+
+if [ "\$USAGE" -gt "\$THRESHOLD" ]; then
+  curl -s -X POST https://api.resend.com/emails \\
+    -H "Authorization: Bearer \$RESEND_API_KEY" \\
+    -H "Content-Type: application/json" \\
+    -d "{
+      \"from\": \"onboarding@resend.dev\",
+      \"to\": \"\$ALERT_EMAIL\",
+      \"subject\": \"⚠️ Disk Space Warning on \$HOSTNAME\",
+      \"text\": \"Disk usage on \$HOSTNAME has reached \${USAGE}% (threshold: \${THRESHOLD}%).\n\nRun 'df -h' to investigate.\"
+    }"
+fi
+DISKSCRIPT
+
+sudo chmod +x /usr/local/bin/check-disk-space.sh
+
+# Add to deploy user's crontab (runs daily at 8am)
+(crontab -u deploy -l 2>/dev/null | grep -v "check-disk-space"; \
+  echo "0 8 * * * /usr/local/bin/check-disk-space.sh") | sudo crontab -u deploy -
+echo "✅ Disk space alerting configured (threshold: ${DISK_THRESHOLD}%)"
+
+# --- 9. Backup log rotation ---
+sudo tee /etc/logrotate.d/backup-db > /dev/null <<'EOF'
+/var/log/backup-db.log {
+    rotate 14
+    weekly
+    compress
+    missingok
+    delaycompress
+    copytruncate
+    notifempty
+}
+EOF
+echo "✅ Backup log rotation configured (14 weeks)"
 
 echo ""
 echo "✅ Post-clone hardening complete!"
