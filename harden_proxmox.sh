@@ -126,6 +126,36 @@ sudo tee /etc/logrotate.d/backup-db > /dev/null <<'EOF'
 EOF
 echo "✅ Backup log rotation configured (14 weeks)"
 
+# --- 10. Pre-create backup log with correct ownership ---
+# Without this, cron runs as deploy but can't write to /var/log and fails silently
+sudo touch /var/log/backup-db.log
+sudo chown deploy:deploy /var/log/backup-db.log
+echo "✅ Backup log file created with correct ownership"
+
+# --- 11. Weekly Docker image prune ---
+# Kamal deployments accumulate old images over time — this keeps disk clean automatically
+(crontab -u deploy -l 2>/dev/null | grep -v "docker image prune"; \
+  echo "0 3 * * 0 docker image prune -a -f >> /var/log/docker-prune.log 2>&1") | sudo crontab -u deploy -
+sudo touch /var/log/docker-prune.log
+sudo chown deploy:deploy /var/log/docker-prune.log
+echo "✅ Weekly Docker image prune configured (Sundays at 3am)"
+
+# --- 12. Swap file sanity check ---
+# Multiple swap files waste disk space (common after adding swap to a low-memory VM)
+SWAP_COUNT=$(swapon --show --noheadings 2>/dev/null | wc -l)
+if [ "$SWAP_COUNT" -gt 1 ]; then
+  echo ""
+  echo "⚠️  WARNING: $SWAP_COUNT swap files detected!"
+  echo "   Run 'swapon --show' to identify the unused one, then:"
+  echo "   sudo swapoff /swapfile"
+  echo "   sudo sed -i '/swapfile/d' /etc/fstab"
+  echo "   sudo rm /swapfile"
+  echo "   (adjust filename to match the inactive swap file)"
+  echo ""
+else
+  echo "✅ Swap file check passed ($SWAP_COUNT swap file active)"
+fi
+
 echo ""
 echo "✅ Post-clone hardening complete!"
 echo "⚠️  IMPORTANT: SSH is now hardened. Make sure you can log in as 'deploy' before logging out!"
