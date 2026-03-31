@@ -2,16 +2,30 @@
 # post-clone-harden.sh
 # Run this on each freshly cloned VM from your template
 # Assumes Docker, fail2ban, and base hardening are already in the template
+#
+# Usage — pass credentials as environment variables:
+#
+#   RESEND_API_KEY="re_xxx" ALERT_EMAIL="you@example.com" \
+#     bash <(curl -fsSL https://raw.githubusercontent.com/k2director/harden/main/harden_proxmox.sh)
+#
+# Or if running locally:
+#
+#   RESEND_API_KEY="re_xxx" ALERT_EMAIL="you@example.com" bash harden_proxmox.sh
+#
 set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────
-# Set these before running the script
-RESEND_API_KEY="re_your_key_here"
-ALERT_EMAIL="your@email.com"
-DISK_THRESHOLD=80   # Alert when disk usage exceeds this percentage
+# Read from environment variables — never hardcode these in the script.
+# Pass them on the command line as shown in the usage above.
+RESEND_API_KEY="${RESEND_API_KEY:?❌  RESEND_API_KEY environment variable is required}"
+ALERT_EMAIL="${ALERT_EMAIL:?❌  ALERT_EMAIL environment variable is required}"
+DISK_THRESHOLD="${DISK_THRESHOLD:-80}"   # Optional: override default of 80%
 # ──────────────────────────────────────────────────────────────────────────
 
 echo "🔒 Running post-clone hardening..."
+echo "   Alert email:    $ALERT_EMAIL"
+echo "   Disk threshold: ${DISK_THRESHOLD}%"
+echo ""
 
 # --- 1. Add deploy user ---
 if ! id "deploy" &>/dev/null; then
@@ -36,8 +50,11 @@ echo "✅ Deploy user granted passwordless sudo"
 sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sudo sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+# Disable slow DNS lookups and GSSAPI auth (prevents 30-40 second SSH delays)
+grep -q "^UseDNS" /etc/ssh/sshd_config && sudo sed -i 's/^UseDNS.*/UseDNS no/' /etc/ssh/sshd_config || echo "UseDNS no" | sudo tee -a /etc/ssh/sshd_config
+grep -q "^GSSAPIAuthentication" /etc/ssh/sshd_config && sudo sed -i 's/^GSSAPIAuthentication.*/GSSAPIAuthentication no/' /etc/ssh/sshd_config || echo "GSSAPIAuthentication no" | sudo tee -a /etc/ssh/sshd_config
 sudo systemctl restart ssh
-echo "✅ SSH hardened"
+echo "✅ SSH hardened (including DNS and GSSAPI fixes for fast login)"
 
 # --- 4. UFW firewall ---
 sudo ufw default deny incoming
@@ -107,7 +124,6 @@ DISKSCRIPT
 
 sudo chmod +x /usr/local/bin/check-disk-space.sh
 
-# Add to deploy user's crontab (runs daily at 8am)
 (crontab -u deploy -l 2>/dev/null | grep -v "check-disk-space"; \
   echo "0 8 * * * /usr/local/bin/check-disk-space.sh") | sudo crontab -u deploy -
 echo "✅ Disk space alerting configured (threshold: ${DISK_THRESHOLD}%)"
